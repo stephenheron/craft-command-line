@@ -19,6 +19,7 @@ class EntryTypesController extends Controller
     public ?string $tab = null;
     public ?string $fieldsConfig = null;
     public ?string $elementsConfig = null;
+    public ?string $name = null;
 
     public function options($actionID): array
     {
@@ -40,7 +41,55 @@ class EntryTypesController extends Controller
             $options = array_merge($options, ['tab', 'elementsConfig']);
         }
 
+        if ($actionID === 'edit-fields') {
+            $options = array_merge($options, ['tab', 'fieldsConfig']);
+        }
+
+        if ($actionID === 'edit-tab') {
+            $options = array_merge($options, ['name']);
+        }
+
         return $options;
+    }
+
+    /**
+     * List all entry types with their handle, name, and sections.
+     *
+     * Usage: php craft command-line/entry-types/list
+     */
+    public function actionList(): int
+    {
+        $allEntryTypes = Craft::$app->getEntries()->getAllEntryTypes();
+
+        if (empty($allEntryTypes)) {
+            $this->stdout("No entry types found.\n");
+            return ExitCode::OK;
+        }
+
+        $sections = Craft::$app->getEntries()->getAllSections();
+        $sectionsByEntryType = [];
+        foreach ($sections as $section) {
+            foreach ($section->getEntryTypes() as $entryType) {
+                $sectionsByEntryType[$entryType->id][] = $section->name;
+            }
+        }
+
+        $this->stdout(str_pad('Handle', 30) . str_pad('Name', 30) . "Sections\n");
+        $this->stdout(str_repeat('-', 90) . "\n");
+
+        foreach ($allEntryTypes as $entryType) {
+            $sectionNames = $sectionsByEntryType[$entryType->id] ?? [];
+            $this->stdout(
+                str_pad($entryType->handle, 30) .
+                str_pad($entryType->name, 30) .
+                (empty($sectionNames) ? '(none)' : implode(', ', $sectionNames)) .
+                "\n"
+            );
+        }
+
+        $this->stdout("\nTotal: " . count($allEntryTypes) . " entry types\n");
+
+        return ExitCode::OK;
     }
 
     /**
@@ -434,6 +483,144 @@ class EntryTypesController extends Controller
 
         $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
         $this->stdout("Added tab: {$name}\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Remove a tab from a specific entry type handle.
+     * Fails if the tab still contains fields or other elements.
+     *
+     * Usage: php craft command-line/entry-types/remove-tab myEntryTypeHandle "Tab Name"
+     */
+    public function actionRemoveTab(string $handle, string $name): int
+    {
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout();
+        if (!$fieldLayout) {
+            $this->stdout("Entry type {$handle} has no field layout.\n");
+            return ExitCode::OK;
+        }
+
+        $tabs = $fieldLayout->getTabs();
+        $targetTabIndex = null;
+
+        foreach ($tabs as $index => $tab) {
+            if ($tab->name === $name) {
+                $targetTabIndex = $index;
+                break;
+            }
+        }
+
+        if ($targetTabIndex === null) {
+            $this->stdout("Tab not found: {$name}\n");
+            return ExitCode::OK;
+        }
+
+        $targetTab = $tabs[$targetTabIndex];
+        $elements = $targetTab->getElements();
+
+        if (!empty($elements)) {
+            $this->stdout("Tab \"{$name}\" still contains " . count($elements) . " element(s). Remove them first.\n");
+            return ExitCode::DATAERR;
+        }
+
+        array_splice($tabs, $targetTabIndex, 1);
+        $fieldLayout->setTabs($tabs);
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Removed tab: {$name}\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Rename a tab on a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/edit-tab myEntryTypeHandle "Old Name" --name="New Name"
+     */
+    public function actionEditTab(string $handle, string $tabName): int
+    {
+        if (!$this->name) {
+            $this->stdout("Missing --name option.\n");
+            return ExitCode::USAGE;
+        }
+
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout();
+        if (!$fieldLayout) {
+            $this->stdout("Entry type {$handle} has no field layout.\n");
+            return ExitCode::OK;
+        }
+
+        $tabs = $fieldLayout->getTabs();
+        $targetTab = null;
+
+        foreach ($tabs as $tab) {
+            if ($tab->name === $tabName) {
+                $targetTab = $tab;
+                break;
+            }
+        }
+
+        if ($targetTab === null) {
+            $this->stdout("Tab not found: {$tabName}\n");
+            return ExitCode::OK;
+        }
+
+        // Check the new name doesn't conflict
+        foreach ($tabs as $tab) {
+            if ($tab->name === $this->name && $tab !== $targetTab) {
+                $this->stdout("A tab named \"{$this->name}\" already exists.\n");
+                return ExitCode::DATAERR;
+            }
+        }
+
+        $oldName = $targetTab->name;
+        $targetTab->name = $this->name;
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Renamed tab: \"{$oldName}\" → \"{$this->name}\"\n");
 
         return ExitCode::OK;
     }
@@ -913,6 +1100,295 @@ class EntryTypesController extends Controller
             $this->stdout("Tab: {$this->tab}\n");
         }
         $this->stdout("Removed: " . implode(', ', $removed) . "\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Edit fields on a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/edit-fields myEntryTypeHandle --fields-config='[{"handle":"metaTitle","label":"New Label","required":true}]'
+     * Optional: --tab="Tab Name" (defaults to searching all tabs)
+     */
+    public function actionEditFields(string $handle): int
+    {
+        if (!$this->fieldsConfig) {
+            $this->stdout("Missing --fields-config option.\n");
+            return ExitCode::USAGE;
+        }
+
+        $decoded = json_decode($this->fieldsConfig, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            $this->stdout("Invalid JSON for --fields-config: " . json_last_error_msg() . "\n");
+            return ExitCode::DATAERR;
+        }
+        if (!is_array($decoded)) {
+            $this->stdout("--fields-config must decode to a list of objects.\n");
+            return ExitCode::DATAERR;
+        }
+
+        $editEntries = [];
+        foreach ($decoded as $index => $entry) {
+            if (!is_array($entry) || empty($entry['handle']) || !is_string($entry['handle'])) {
+                $this->stdout("--fields-config entry {$index} must include a string handle to identify the field.\n");
+                return ExitCode::DATAERR;
+            }
+            $editEntries[] = $entry;
+        }
+
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout();
+        if (!$fieldLayout) {
+            $this->stdout("Entry type {$handle} has no field layout.\n");
+            return ExitCode::OK;
+        }
+
+        $tabs = $fieldLayout->getTabs();
+        if (empty($tabs)) {
+            $this->stdout("Entry type {$handle} has no field layout tabs.\n");
+            return ExitCode::OK;
+        }
+
+        $searchTabs = $tabs;
+        if ($this->tab) {
+            $searchTabs = array_values(array_filter($tabs, fn($tab) => $tab->name === $this->tab));
+            if (empty($searchTabs)) {
+                $this->stdout("Tab not found: {$this->tab}\n");
+                return ExitCode::OK;
+            }
+        }
+
+        // Collect all used handles across all tabs (for rename validation)
+        $usedHandles = [];
+        foreach ($tabs as $tab) {
+            foreach ($tab->getElements() as $element) {
+                if ($element instanceof BaseField) {
+                    try {
+                        $attr = $element->attribute();
+                        if ($attr !== '') {
+                            $usedHandles[$attr] = true;
+                        }
+                    } catch (\Throwable) {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        $reservedWords = array_unique(array_merge(
+            Field::RESERVED_HANDLES,
+            $fieldLayout->reservedFieldHandles ?? []
+        ));
+        $handleValidator = new HandleValidator(['reservedWords' => $reservedWords]);
+
+        $edited = [];
+        $notFound = [];
+        $validationErrors = [];
+
+        foreach ($editEntries as $entry) {
+            $targetHandle = $entry['handle'];
+            $found = false;
+
+            foreach ($searchTabs as $tab) {
+                $elements = $tab->getElements();
+                $elementIndex = null;
+                $matchedElement = null;
+
+                foreach ($elements as $idx => $element) {
+                    if (!$element instanceof CustomField) {
+                        continue;
+                    }
+                    try {
+                        if ($element->attribute() === $targetHandle) {
+                            $elementIndex = $idx;
+                            $matchedElement = $element;
+                            break;
+                        }
+                    } catch (\Throwable) {
+                        continue;
+                    }
+                }
+
+                if ($matchedElement === null) {
+                    continue;
+                }
+
+                $found = true;
+                $changes = [];
+
+                // Apply property updates
+                if (array_key_exists('label', $entry)) {
+                    $matchedElement->label = $entry['label'];
+                    $changes[] = 'label';
+                }
+                if (array_key_exists('instructions', $entry)) {
+                    $matchedElement->instructions = $entry['instructions'];
+                    $changes[] = 'instructions';
+                }
+                if (array_key_exists('required', $entry)) {
+                    $matchedElement->required = (bool)$entry['required'];
+                    $changes[] = 'required';
+                }
+                if (array_key_exists('tip', $entry)) {
+                    $matchedElement->tip = $entry['tip'];
+                    $changes[] = 'tip';
+                }
+                if (array_key_exists('warning', $entry)) {
+                    $matchedElement->warning = $entry['warning'];
+                    $changes[] = 'warning';
+                }
+
+                // Handle rename (changing the instance handle)
+                if (array_key_exists('as', $entry)) {
+                    $newHandle = $entry['as'];
+                    $error = null;
+                    $handleValidator->validate($newHandle, $error);
+                    if ($error !== null) {
+                        $validationErrors[] = "Field {$targetHandle} rename to '{$newHandle}' invalid: {$error}";
+                        break;
+                    }
+                    if (isset($usedHandles[$newHandle]) && $newHandle !== $targetHandle) {
+                        $validationErrors[] = "Field {$targetHandle} rename to '{$newHandle}' conflicts with existing handle.";
+                        break;
+                    }
+                    $matchedElement->handle = $newHandle;
+                    unset($usedHandles[$targetHandle]);
+                    $usedHandles[$newHandle] = true;
+                    $changes[] = "handle → {$newHandle}";
+                }
+
+                // Handle tab movement
+                $targetTabName = $entry['tab'] ?? null;
+                if ($targetTabName) {
+                    $destinationTab = null;
+                    foreach ($tabs as $t) {
+                        if ($t->name === $targetTabName) {
+                            $destinationTab = $t;
+                            break;
+                        }
+                    }
+
+                    if ($destinationTab === null) {
+                        $validationErrors[] = "Field {$targetHandle} target tab '{$targetTabName}' not found.";
+                        break;
+                    }
+
+                    if ($destinationTab !== $tab) {
+                        // Remove from source tab
+                        array_splice($elements, $elementIndex, 1);
+                        $tab->setElements($elements);
+
+                        // Add to destination tab
+                        $destElements = $destinationTab->getElements();
+                        $destElements[] = $matchedElement;
+                        $destinationTab->setElements($destElements);
+
+                        $changes[] = "tab → {$targetTabName}";
+
+                        // Repositioning within destination tab handled below
+                        $elements = $destinationTab->getElements();
+                        $elementIndex = count($elements) - 1;
+                        $tab = $destinationTab;
+                    }
+                }
+
+                // Handle repositioning
+                $afterHandle = $entry['after'] ?? null;
+                $beforeHandle = $entry['before'] ?? null;
+
+                if ($afterHandle && $beforeHandle) {
+                    $validationErrors[] = "Field {$targetHandle} cannot use both 'after' and 'before'.";
+                    break;
+                }
+
+                if ($afterHandle || $beforeHandle) {
+                    $positionHandle = $afterHandle ?: $beforeHandle;
+                    $insertAfter = (bool)$afterHandle;
+                    $positionIndex = null;
+
+                    // Remove from current position
+                    array_splice($elements, $elementIndex, 1);
+
+                    foreach ($elements as $idx => $el) {
+                        if ($el instanceof BaseField) {
+                            try {
+                                if ($el->attribute() === $positionHandle) {
+                                    $positionIndex = $idx;
+                                    break;
+                                }
+                            } catch (\Throwable) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    if ($positionIndex === null) {
+                        // Position handle not found, put it back at end
+                        $elements[] = $matchedElement;
+                        $this->stdout("Warning: Position handle '{$positionHandle}' not found for {$targetHandle}; moved to end.\n");
+                    } else {
+                        if ($insertAfter) {
+                            $positionIndex++;
+                        }
+                        array_splice($elements, $positionIndex, 0, [$matchedElement]);
+                    }
+
+                    $tab->setElements($elements);
+                    $changes[] = ($insertAfter ? "after" : "before") . " {$positionHandle}";
+                }
+
+                $edited[] = $targetHandle . ' (' . implode(', ', $changes) . ')';
+                break;
+            }
+
+            if (!$found) {
+                $notFound[] = $targetHandle;
+            }
+        }
+
+        if (!empty($validationErrors)) {
+            $this->stdout("Validation errors:\n");
+            foreach ($validationErrors as $error) {
+                $this->stdout("  - {$error}\n");
+            }
+            $this->stdout("No changes were saved.\n");
+            return ExitCode::DATAERR;
+        }
+
+        if (empty($edited)) {
+            $this->stdout("No matching fields found to edit.\n");
+            if (!empty($notFound)) {
+                $this->stdout("Not found: " . implode(', ', $notFound) . "\n");
+            }
+            return ExitCode::OK;
+        }
+
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Edited: " . implode(', ', $edited) . "\n");
+        if (!empty($notFound)) {
+            $this->stdout("Not found: " . implode(', ', $notFound) . "\n");
+        }
 
         return ExitCode::OK;
     }
