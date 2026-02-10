@@ -1,0 +1,980 @@
+<?php
+
+namespace whereverly\craftcommandline\console\controllers;
+
+use Craft;
+use craft\console\Controller;
+use craft\base\FieldInterface;
+use craft\base\Field;
+use craft\elements\Entry;
+use craft\fieldlayoutelements\CustomField;
+use craft\fieldlayoutelements\BaseField;
+use craft\models\FieldLayout;
+use craft\models\FieldLayoutTab;
+use craft\validators\HandleValidator;
+use yii\console\ExitCode;
+
+class EntryTypesController extends Controller
+{
+    public ?string $tab = null;
+    public ?string $fieldsConfig = null;
+    public ?string $elementsConfig = null;
+
+    public function options($actionID): array
+    {
+        $options = parent::options($actionID);
+
+        if ($actionID === 'add-fields') {
+            $options = array_merge($options, ['tab', 'fieldsConfig']);
+        }
+
+        if ($actionID === 'remove-fields') {
+            $options = array_merge($options, ['tab', 'fieldsConfig']);
+        }
+
+        if ($actionID === 'add-ui-elements') {
+            $options = array_merge($options, ['tab', 'elementsConfig']);
+        }
+
+        if ($actionID === 'remove-ui-elements') {
+            $options = array_merge($options, ['tab', 'elementsConfig']);
+        }
+
+        return $options;
+    }
+
+    /**
+     * Get fields for a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/fields myEntryTypeHandle
+     */
+    public function actionFields(string $handle): int
+    {
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout();
+
+        if (!$fieldLayout) {
+            $this->stdout("Entry type {$handle} has no field layout.\n");
+            return ExitCode::OK;
+        }
+
+        $tabs = $fieldLayout->getTabs();
+
+        if (empty($tabs)) {
+            $this->stdout("Entry type {$handle} has no field layout tabs.\n");
+            return ExitCode::OK;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Tabs: " . count($tabs) . "\n\n");
+
+        foreach ($tabs as $tab) {
+            $this->stdout("Tab: {$tab->name}\n");
+
+            foreach ($tab->getElements() as $element) {
+                if ($element instanceof \craft\fieldlayoutelements\CustomField) {
+                    $this->outputCustomField($element);
+                    $this->stdout("\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\Tip) {
+                    $this->stdout("Tip:\n");
+                    $this->stdout("  Text: " . ($element->tip ?: '(empty)') . "\n");
+                    $this->stdout("  Style: {$element->style}\n");
+                    $this->stdout("  Dismissible: " . ($element->dismissible ? 'yes' : 'no') . "\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\Heading) {
+                    $this->stdout("Heading:\n");
+                    $this->stdout("  " . ($element->heading ?: '(empty)') . "\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\Markdown) {
+                    $this->stdout("Markdown:\n");
+                    $this->stdout("  Content: " . ($element->content ?: '(empty)') . "\n");
+                    $this->stdout("  Display in pane: " . ($element->displayInPane ? 'yes' : 'no') . "\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\Template) {
+                    $this->stdout("Template:\n");
+                    $this->stdout("  Template: " . ($element->template ?: '(none)') . "\n");
+                    $this->stdout("  Template mode: {$element->templateMode}\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\HorizontalRule) {
+                    $this->stdout("Horizontal rule\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\LineBreak) {
+                    $this->stdout("Line break\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\Html) {
+                    $this->stdout("HTML element\n\n");
+                    continue;
+                }
+
+                if ($element instanceof \craft\fieldlayoutelements\BaseNativeField) {
+                    $this->outputNativeField($element);
+                    $this->stdout("\n");
+                    continue;
+                }
+
+                $this->stdout("Element: " . get_class($element) . "\n\n");
+            }
+        }
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Add fields to a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/add-fields myEntryTypeHandle --fields-config='[{"handle":"text","as":"textOne","label":"Intro"},{"handle":"text","as":"textTwo","label":"Outro"}]'
+     * Optional: --fields-config='[{"handle":"text","as":"textOne","label":"Intro"},{"handle":"text","as":"textTwo","label":"Outro"}]'
+     */
+    public function actionAddFields(string $handle): int
+    {
+        if (!$this->fieldsConfig) {
+            $this->stdout("Missing --fields-config option.\n");
+            return ExitCode::USAGE;
+        }
+
+        $decoded = json_decode($this->fieldsConfig, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            $this->stdout("Invalid JSON for --fields-config: " . json_last_error_msg() . "\n");
+            return ExitCode::DATAERR;
+        }
+        if (!is_array($decoded)) {
+            $this->stdout("--fields-config must decode to a list of objects.\n");
+            return ExitCode::DATAERR;
+        }
+
+        $fieldEntries = [];
+        foreach ($decoded as $index => $entry) {
+            if (!is_array($entry) || empty($entry['handle']) || !is_string($entry['handle'])) {
+                $this->stdout("--fields-config entry {$index} must include a string handle.\n");
+                return ExitCode::DATAERR;
+            }
+            $overrides = $entry;
+            unset($overrides['handle']);
+            $fieldEntries[] = [
+                'fieldHandle' => $entry['handle'],
+                'overrides' => $overrides,
+            ];
+        }
+
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout() ?? new FieldLayout(['type' => Entry::class]);
+        $tabs = $fieldLayout->getTabs();
+        $tabName = $this->tab ?: 'Content';
+        $targetTabIndex = 0;
+
+        if (empty($tabs)) {
+            $tabs = [new FieldLayoutTab(['name' => $tabName])];
+            $targetTabIndex = 0;
+        } elseif ($this->tab) {
+            $targetTabIndex = null;
+            foreach ($tabs as $index => $tab) {
+                if ($tab->name === $this->tab) {
+                    $targetTabIndex = $index;
+                    break;
+                }
+            }
+
+            if ($targetTabIndex === null) {
+                $tabs[] = new FieldLayoutTab(['name' => $this->tab]);
+                $targetTabIndex = count($tabs) - 1;
+            }
+        }
+
+        $fieldLayout->setTabs($tabs);
+        $tabs = $fieldLayout->getTabs();
+        $targetTab = $tabs[$targetTabIndex] ?? $tabs[0];
+
+        $existingFieldUids = [];
+        foreach ($fieldLayout->getCustomFieldElements() as $layoutElement) {
+            $existingFieldUids[$layoutElement->getFieldUid()] = true;
+        }
+
+        $usedHandles = [];
+        foreach ($fieldLayout->getElementsByType(BaseField::class) as $layoutElement) {
+            try {
+                $attribute = $layoutElement->attribute();
+            } catch (\Throwable) {
+                continue;
+            }
+            if ($attribute !== '') {
+                $usedHandles[$attribute] = true;
+            }
+        }
+
+        $reservedWords = array_unique(array_merge(
+            Field::RESERVED_HANDLES,
+            $fieldLayout->reservedFieldHandles ?? []
+        ));
+        $handleValidator = new HandleValidator(['reservedWords' => $reservedWords]);
+
+        $added = [];
+        $skipped = [];
+        $missing = [];
+        $validationErrors = [];
+        $elements = $targetTab->getElements();
+        $afterWarnings = [];
+
+        foreach ($fieldEntries as $entry) {
+            $fieldHandle = $entry['fieldHandle'];
+            $overrides = $entry['overrides'] ?? [];
+            if (!is_array($overrides)) {
+                $overrides = [];
+            }
+            $field = Craft::$app->getFields()->getFieldByHandle($fieldHandle);
+            if (!$field) {
+                $missing[] = $fieldHandle;
+                continue;
+            }
+
+            if (isset($existingFieldUids[$field->uid]) && !$field::isMultiInstance()) {
+                $skipped[] = $fieldHandle;
+                continue;
+            }
+
+            $elementConfig = [];
+            if (array_key_exists('label', $overrides)) {
+                $elementConfig['label'] = $overrides['label'];
+            }
+            if (array_key_exists('handle', $overrides)) {
+                $elementConfig['handle'] = $overrides['handle'];
+            }
+            if (array_key_exists('instructions', $overrides)) {
+                $elementConfig['instructions'] = $overrides['instructions'];
+            }
+            if (array_key_exists('required', $overrides)) {
+                $elementConfig['required'] = (bool)$overrides['required'];
+            }
+            if (array_key_exists('tip', $overrides)) {
+                $elementConfig['tip'] = $overrides['tip'];
+            }
+            if (array_key_exists('warning', $overrides)) {
+                $elementConfig['warning'] = $overrides['warning'];
+            }
+            if (array_key_exists('as', $overrides)) {
+                $elementConfig['handle'] = $overrides['as'];
+            }
+            $afterHandle = null;
+            if (array_key_exists('after', $overrides)) {
+                $afterHandle = $overrides['after'];
+            }
+
+            $effectiveHandle = $elementConfig['handle'] ?? $field->handle;
+            if ($effectiveHandle === '' || $effectiveHandle === null) {
+                $validationErrors[] = "Field {$fieldHandle} has an empty handle override.";
+                continue;
+            }
+
+            if (isset($elementConfig['handle'])) {
+                $error = null;
+                $handleValidator->validate($effectiveHandle, $error);
+                if ($error !== null) {
+                    $validationErrors[] = "Field {$fieldHandle} has invalid handle '{$effectiveHandle}': {$error}";
+                    continue;
+                }
+            }
+
+            if (isset($usedHandles[$effectiveHandle])) {
+                $validationErrors[] = "Field {$fieldHandle} handle '{$effectiveHandle}' is already in use in this layout.";
+                continue;
+            }
+
+            $layoutElement = new CustomField($field, $elementConfig);
+            $layoutElement->setLayout($fieldLayout);
+            $insertIndex = null;
+            if ($afterHandle) {
+                foreach ($elements as $index => $element) {
+                    if ($element instanceof BaseField) {
+                        try {
+                            if ($element->attribute() === $afterHandle) {
+                                $insertIndex = $index;
+                                break;
+                            }
+                        } catch (\Throwable) {
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if ($insertIndex === null) {
+                $elements[] = $layoutElement;
+                if ($afterHandle) {
+                    $afterWarnings[] = "After handle not found in tab; appended to end: {$afterHandle}";
+                }
+            } else {
+                $insertIndex++;
+                array_splice($elements, $insertIndex, 0, [$layoutElement]);
+            }
+            $added[] = $fieldHandle;
+            $existingFieldUids[$field->uid] = true;
+            $usedHandles[$effectiveHandle] = true;
+        }
+
+        if (!empty($validationErrors)) {
+            $this->stdout("Handle validation errors:\n");
+            foreach ($validationErrors as $error) {
+                $this->stdout("  - {$error}\n");
+            }
+            $this->stdout("No changes were saved.\n");
+            return ExitCode::DATAERR;
+        }
+
+        if (!empty($added)) {
+            $targetTab->setElements($elements);
+        }
+
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Tab: {$targetTab->name}\n");
+        foreach (array_unique($afterWarnings) as $warning) {
+            $this->stdout("{$warning}\n");
+        }
+        $this->stdout("Added: " . (empty($added) ? '(none)' : implode(', ', $added)) . "\n");
+        $this->stdout("Skipped (already present): " . (empty($skipped) ? '(none)' : implode(', ', $skipped)) . "\n");
+        $this->stdout("Missing fields: " . (empty($missing) ? '(none)' : implode(', ', $missing)) . "\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Add a new tab to a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/add-tab myEntryTypeHandle "Tab Name"
+     */
+    public function actionAddTab(string $handle, string $name): int
+    {
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout() ?? new FieldLayout(['type' => Entry::class]);
+        $tabs = $fieldLayout->getTabs();
+
+        foreach ($tabs as $tab) {
+            if ($tab->name === $name) {
+                $this->stdout("Tab already exists: {$name}\n");
+                return ExitCode::OK;
+            }
+        }
+
+        $tabs[] = new FieldLayoutTab(['name' => $name]);
+        $fieldLayout->setTabs($tabs);
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Added tab: {$name}\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Add UI elements (heading, horizontal rule) to a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/add-ui-elements myEntryTypeHandle --elements-config='[{"type":"heading","heading":"Page Settings"},{"type":"hr"}]'
+     * Optional: --tab="Tab Name" (defaults to "Content")
+     *
+     * Supported element types:
+     * - heading: Adds a heading element. Config: {"type":"heading","heading":"Text here","after":"fieldHandle"}
+     * - hr: Adds a horizontal rule. Config: {"type":"hr","after":"fieldHandle"}
+     */
+    public function actionAddUiElements(string $handle): int
+    {
+        if (!$this->elementsConfig) {
+            $this->stdout("Missing --elements-config option.\n");
+            return ExitCode::USAGE;
+        }
+
+        $decoded = json_decode($this->elementsConfig, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            $this->stdout("Invalid JSON for --elements-config: " . json_last_error_msg() . "\n");
+            return ExitCode::DATAERR;
+        }
+        if (!is_array($decoded)) {
+            $this->stdout("--elements-config must decode to a list of objects.\n");
+            return ExitCode::DATAERR;
+        }
+
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout() ?? new FieldLayout(['type' => Entry::class]);
+        $tabs = $fieldLayout->getTabs();
+        $tabName = $this->tab ?: 'Content';
+        $targetTabIndex = 0;
+
+        if (empty($tabs)) {
+            $tabs = [new FieldLayoutTab(['name' => $tabName])];
+            $targetTabIndex = 0;
+        } elseif ($this->tab) {
+            $targetTabIndex = null;
+            foreach ($tabs as $index => $tab) {
+                if ($tab->name === $this->tab) {
+                    $targetTabIndex = $index;
+                    break;
+                }
+            }
+
+            if ($targetTabIndex === null) {
+                $this->stdout("Tab not found: {$this->tab}\n");
+                return ExitCode::OK;
+            }
+        }
+
+        $fieldLayout->setTabs($tabs);
+        $tabs = $fieldLayout->getTabs();
+        $targetTab = $tabs[$targetTabIndex] ?? $tabs[0];
+
+        $added = [];
+        $elements = $targetTab->getElements();
+        $lastInsertIndex = null;
+
+        foreach ($decoded as $index => $config) {
+            if (!is_array($config) || empty($config['type'])) {
+                $this->stdout("--elements-config entry {$index} must include a type.\n");
+                return ExitCode::DATAERR;
+            }
+
+            $type = $config['type'];
+            $afterHandle = $config['after'] ?? null;
+            $layoutElement = null;
+
+            switch ($type) {
+                case 'heading':
+                    $headingText = $config['heading'] ?? '';
+                    $layoutElement = new \craft\fieldlayoutelements\Heading([
+                        'heading' => $headingText,
+                    ]);
+                    $added[] = "Heading: \"{$headingText}\"";
+                    break;
+
+                case 'hr':
+                case 'horizontal-rule':
+                    $layoutElement = new \craft\fieldlayoutelements\HorizontalRule();
+                    $added[] = "Horizontal rule";
+                    break;
+
+                case 'tip':
+                    $tipText = $config['tip'] ?? '';
+                    $style = $config['style'] ?? 'tip'; // 'tip' or 'warning'
+                    $dismissible = $config['dismissible'] ?? false;
+                    $layoutElement = new \craft\fieldlayoutelements\Tip([
+                        'tip' => $tipText,
+                        'style' => $style,
+                        'dismissible' => (bool)$dismissible,
+                    ]);
+                    $added[] = "Tip ({$style}): \"{$tipText}\"";
+                    break;
+
+                case 'markdown':
+                    $content = $config['content'] ?? '';
+                    $layoutElement = new \craft\fieldlayoutelements\Markdown([
+                        'content' => $content,
+                    ]);
+                    $preview = strlen($content) > 30 ? substr($content, 0, 30) . '...' : $content;
+                    $added[] = "Markdown: \"{$preview}\"";
+                    break;
+
+                case 'line-break':
+                case 'br':
+                    $layoutElement = new \craft\fieldlayoutelements\LineBreak();
+                    $added[] = "Line break";
+                    break;
+
+                default:
+                    $this->stdout("Unknown element type: {$type}\n");
+                    return ExitCode::DATAERR;
+            }
+
+            if ($layoutElement) {
+                $insertIndex = null;
+                if ($afterHandle) {
+                    foreach ($elements as $idx => $element) {
+                        if ($element instanceof BaseField) {
+                            try {
+                                if ($element->attribute() === $afterHandle) {
+                                    $insertIndex = $idx + 1;
+                                    break;
+                                }
+                            } catch (\Throwable) {
+                                continue;
+                            }
+                        }
+                    }
+                    if ($insertIndex !== null) {
+                        $lastInsertIndex = $insertIndex;
+                    }
+                } elseif ($lastInsertIndex !== null) {
+                    // No "after" specified, insert after the last inserted element
+                    $insertIndex = $lastInsertIndex;
+                }
+
+                if ($insertIndex === null) {
+                    $elements[] = $layoutElement;
+                    $lastInsertIndex = count($elements) - 1;
+                    if ($afterHandle) {
+                        $this->stdout("Warning: After handle '{$afterHandle}' not found; appended to end.\n");
+                    }
+                } else {
+                    array_splice($elements, $insertIndex, 0, [$layoutElement]);
+                    $lastInsertIndex = $insertIndex + 1;
+                }
+            }
+        }
+
+        if (!empty($added)) {
+            $targetTab->setElements($elements);
+        }
+
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Tab: {$targetTab->name}\n");
+        $this->stdout("Added: " . (empty($added) ? '(none)' : implode(', ', $added)) . "\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Remove UI elements (heading, horizontal rule) from a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/remove-ui-elements myEntryTypeHandle --elements-config='[{"type":"heading","heading":"Page Settings"},{"type":"hr"}]'
+     * Optional: --tab="Tab Name" (defaults to searching all tabs)
+     */
+    public function actionRemoveUiElements(string $handle): int
+    {
+        if (!$this->elementsConfig) {
+            $this->stdout("Missing --elements-config option.\n");
+            return ExitCode::USAGE;
+        }
+
+        $decoded = json_decode($this->elementsConfig, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            $this->stdout("Invalid JSON for --elements-config: " . json_last_error_msg() . "\n");
+            return ExitCode::DATAERR;
+        }
+        if (!is_array($decoded)) {
+            $this->stdout("--elements-config must decode to a list of objects.\n");
+            return ExitCode::DATAERR;
+        }
+
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout();
+        if (!$fieldLayout) {
+            $this->stdout("Entry type {$handle} has no field layout.\n");
+            return ExitCode::OK;
+        }
+
+        $tabs = $fieldLayout->getTabs();
+        if (empty($tabs)) {
+            $this->stdout("Entry type {$handle} has no field layout tabs.\n");
+            return ExitCode::OK;
+        }
+
+        if ($this->tab) {
+            $tabs = array_values(array_filter($tabs, fn($tab) => $tab->name === $this->tab));
+            if (empty($tabs)) {
+                $this->stdout("Tab not found: {$this->tab}\n");
+                return ExitCode::OK;
+            }
+        }
+
+        $removed = [];
+        foreach ($tabs as $tab) {
+            $elements = $tab->getElements();
+            $newElements = [];
+
+            foreach ($elements as $element) {
+                $shouldRemove = false;
+
+                foreach ($decoded as $config) {
+                    $type = $config['type'] ?? null;
+
+                    if ($type === 'heading' && $element instanceof \craft\fieldlayoutelements\Heading) {
+                        if (isset($config['heading'])) {
+                            if ($element->heading === $config['heading']) {
+                                $shouldRemove = true;
+                                $removed[] = "Heading: \"{$element->heading}\"";
+                                break;
+                            }
+                        } else {
+                            $shouldRemove = true;
+                            $removed[] = "Heading: \"{$element->heading}\"";
+                            break;
+                        }
+                    }
+
+                    if (($type === 'hr' || $type === 'horizontal-rule') && $element instanceof \craft\fieldlayoutelements\HorizontalRule) {
+                        $shouldRemove = true;
+                        $removed[] = "Horizontal rule";
+                        break;
+                    }
+
+                    if ($type === 'tip' && $element instanceof \craft\fieldlayoutelements\Tip) {
+                        if (isset($config['tip'])) {
+                            if ($element->tip === $config['tip']) {
+                                $shouldRemove = true;
+                                $removed[] = "Tip: \"{$element->tip}\"";
+                                break;
+                            }
+                        } else {
+                            $shouldRemove = true;
+                            $removed[] = "Tip: \"{$element->tip}\"";
+                            break;
+                        }
+                    }
+
+                    if ($type === 'markdown' && $element instanceof \craft\fieldlayoutelements\Markdown) {
+                        if (isset($config['content'])) {
+                            if ($element->content === $config['content']) {
+                                $shouldRemove = true;
+                                $removed[] = "Markdown";
+                                break;
+                            }
+                        } else {
+                            $shouldRemove = true;
+                            $removed[] = "Markdown";
+                            break;
+                        }
+                    }
+
+                    if (($type === 'line-break' || $type === 'br') && $element instanceof \craft\fieldlayoutelements\LineBreak) {
+                        $shouldRemove = true;
+                        $removed[] = "Line break";
+                        break;
+                    }
+                }
+
+                if (!$shouldRemove) {
+                    $newElements[] = $element;
+                }
+            }
+
+            $tab->setElements($newElements);
+        }
+
+        if (empty($removed)) {
+            $this->stdout("No matching UI elements found to remove.\n");
+            return ExitCode::OK;
+        }
+
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        $this->stdout("Removed: " . implode(', ', $removed) . "\n");
+
+        return ExitCode::OK;
+    }
+
+    /**
+     * Remove fields from a specific entry type handle.
+     *
+     * Usage: php craft command-line/entry-types/remove-fields myEntryTypeHandle --fields-config='[{"handle":"text"},{"handle":"text","as":"introText"}]'
+     */
+    public function actionRemoveFields(string $handle): int
+    {
+        if (!$this->fieldsConfig) {
+            $this->stdout("Missing --fields-config option.\n");
+            return ExitCode::USAGE;
+        }
+
+        $decoded = json_decode($this->fieldsConfig, true);
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            $this->stdout("Invalid JSON for --fields-config: " . json_last_error_msg() . "\n");
+            return ExitCode::DATAERR;
+        }
+        if (!is_array($decoded)) {
+            $this->stdout("--fields-config must decode to a list of objects.\n");
+            return ExitCode::DATAERR;
+        }
+
+        $entries = [];
+        foreach ($decoded as $index => $entry) {
+            if (!is_array($entry) || empty($entry['handle']) || !is_string($entry['handle'])) {
+                $this->stdout("--fields-config entry {$index} must include a string handle.\n");
+                return ExitCode::DATAERR;
+            }
+            $entries[] = [
+                'fieldHandle' => $entry['handle'],
+                'instanceHandle' => isset($entry['as']) && is_string($entry['as']) ? $entry['as'] : null,
+            ];
+        }
+
+        $entryType = Craft::$app->getEntries()->getEntryTypeByHandle($handle);
+
+        if (!$entryType) {
+            $this->stdout("Entry type not found for handle: {$handle}\n");
+            return ExitCode::OK;
+        }
+
+        $fieldLayout = $entryType->getFieldLayout();
+        if (!$fieldLayout) {
+            $this->stdout("Entry type {$handle} has no field layout.\n");
+            return ExitCode::OK;
+        }
+
+        $tabs = $fieldLayout->getTabs();
+        if (empty($tabs)) {
+            $this->stdout("Entry type {$handle} has no field layout tabs.\n");
+            return ExitCode::OK;
+        }
+
+        if ($this->tab) {
+            $tabs = array_values(array_filter($tabs, fn($tab) => $tab->name === $this->tab));
+            if (empty($tabs)) {
+                $this->stdout("Tab not found: {$this->tab}\n");
+                return ExitCode::OK;
+            }
+        }
+
+        $removed = [];
+        foreach ($tabs as $tab) {
+            $elements = $tab->getElements();
+            $newElements = [];
+
+            foreach ($elements as $element) {
+                if (!$element instanceof CustomField) {
+                    $newElements[] = $element;
+                    continue;
+                }
+
+                $match = false;
+                foreach ($entries as $entry) {
+                    try {
+                        $field = $element->getField();
+                    } catch (\Throwable) {
+                        continue;
+                    }
+
+                    if ($field->handle !== $entry['fieldHandle']) {
+                        continue;
+                    }
+
+                    if ($entry['instanceHandle'] !== null) {
+                        try {
+                            if ($element->attribute() !== $entry['instanceHandle']) {
+                                continue;
+                            }
+                        } catch (\Throwable) {
+                            continue;
+                        }
+                    }
+
+                    $match = true;
+                    $removed[] = $entry['instanceHandle'] ? "{$entry['fieldHandle']} (as {$entry['instanceHandle']})" : $entry['fieldHandle'];
+                    break;
+                }
+
+                if (!$match) {
+                    $newElements[] = $element;
+                }
+            }
+
+            $tab->setElements($newElements);
+        }
+
+        if (empty($removed)) {
+            $this->stdout("No matching fields found to remove.\n");
+            return ExitCode::OK;
+        }
+
+        $entryType->setFieldLayout($fieldLayout);
+
+        if (!Craft::$app->getEntries()->saveEntryType($entryType)) {
+            $this->stdout("Failed to save entry type {$handle}.\n");
+            if ($entryType->hasErrors()) {
+                $this->stdout("Errors:\n");
+                foreach ($entryType->getErrors() as $attribute => $errors) {
+                    foreach ($errors as $error) {
+                        $this->stdout("  {$attribute}: {$error}\n");
+                    }
+                }
+            }
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        $this->stdout("Entry type: {$entryType->name} ({$entryType->handle})\n");
+        if ($this->tab) {
+            $this->stdout("Tab: {$this->tab}\n");
+        }
+        $this->stdout("Removed: " . implode(', ', $removed) . "\n");
+
+        return ExitCode::OK;
+    }
+
+    private function outputCustomField(CustomField $element): void
+    {
+        $field = $element->getField();
+        $layoutHandle = null;
+
+        try {
+            $layoutHandle = $element->attribute();
+        } catch (\Throwable) {
+            $layoutHandle = null;
+        }
+
+        $handle = $layoutHandle ?: $field->handle;
+        $originalHandle = $element->getOriginalHandle();
+
+        $this->stdout("Handle: {$handle}\n");
+
+        if ($originalHandle && $originalHandle !== $handle) {
+            $this->stdout("  Field handle: {$originalHandle}\n");
+        }
+
+        $this->outputFieldDetails($field);
+    }
+
+    private function outputField(FieldInterface $field): void
+    {
+        $this->stdout("Handle: {$field->handle}\n");
+        $this->outputFieldDetails($field);
+    }
+
+    private function outputFieldDetails(FieldInterface $field): void
+    {
+        $this->stdout("  Name: {$field->name}\n");
+        $this->stdout("  Type: " . get_class($field) . "\n");
+        $this->stdout("  ID: {$field->id}\n");
+        $this->stdout("  Required: " . ($field->required ? 'yes' : 'no') . "\n");
+        $this->stdout("  Instructions: " . ($field->instructions ?: '(none)') . "\n");
+
+        if ($field->translationMethod && $field->translationMethod !== 'none') {
+            $this->stdout("  Translation method: {$field->translationMethod}\n");
+        }
+
+        if ($field->translationKeyFormat) {
+            $this->stdout("  Translation key format: {$field->translationKeyFormat}\n");
+        }
+
+        $settings = method_exists($field, 'getSettings') ? $field->getSettings() : $field->settings;
+        $settingsJson = json_encode(
+            $settings,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+
+        if ($settingsJson === false || $settingsJson === null) {
+            $settingsJson = '{}';
+        }
+
+        $settingsJson = preg_replace('/^/m', '    ', $settingsJson);
+        $this->stdout("  Settings:\n{$settingsJson}\n");
+    }
+
+    private function outputNativeField(\craft\fieldlayoutelements\BaseNativeField $field): void
+    {
+        $label = method_exists($field, 'label') ? $field->label() : $field->label;
+        $attribute = method_exists($field, 'attribute') ? $field->attribute() : '(unknown)';
+
+        $this->stdout("Native field: {$label}\n");
+        $this->stdout("  Attribute: {$attribute}\n");
+        $this->stdout("  Type: " . get_class($field) . "\n");
+        $this->stdout("  Required: " . ($field->required ? 'yes' : 'no') . "\n");
+        $this->stdout("  Mandatory: " . ($field->mandatory ? 'yes' : 'no') . "\n");
+        $this->stdout("  Requirable: " . ($field->requirable ? 'yes' : 'no') . "\n");
+
+        if ($field->instructions) {
+            $this->stdout("  Instructions: {$field->instructions}\n");
+        }
+
+        if ($field->tip) {
+            $this->stdout("  Tip: {$field->tip}\n");
+        }
+
+        if ($field->warning) {
+            $this->stdout("  Warning: {$field->warning}\n");
+        }
+    }
+}
