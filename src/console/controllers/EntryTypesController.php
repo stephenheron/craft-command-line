@@ -281,8 +281,17 @@ class EntryTypesController extends Controller
                 $elementConfig['handle'] = $overrides['as'];
             }
             $afterHandle = null;
+            $beforeHandle = null;
             if (array_key_exists('after', $overrides)) {
                 $afterHandle = $overrides['after'];
+            }
+            if (array_key_exists('before', $overrides)) {
+                $beforeHandle = $overrides['before'];
+            }
+
+            if ($afterHandle && $beforeHandle) {
+                $validationErrors[] = "Field {$fieldHandle} cannot use both 'after' and 'before' options.";
+                continue;
             }
 
             $effectiveHandle = $elementConfig['handle'] ?? $field->handle;
@@ -308,11 +317,14 @@ class EntryTypesController extends Controller
             $layoutElement = new CustomField($field, $elementConfig);
             $layoutElement->setLayout($fieldLayout);
             $insertIndex = null;
-            if ($afterHandle) {
+            $positionHandle = $afterHandle ?: $beforeHandle;
+            $insertAfter = (bool)$afterHandle;
+
+            if ($positionHandle) {
                 foreach ($elements as $index => $element) {
                     if ($element instanceof BaseField) {
                         try {
-                            if ($element->attribute() === $afterHandle) {
+                            if ($element->attribute() === $positionHandle) {
                                 $insertIndex = $index;
                                 break;
                             }
@@ -325,11 +337,13 @@ class EntryTypesController extends Controller
 
             if ($insertIndex === null) {
                 $elements[] = $layoutElement;
-                if ($afterHandle) {
-                    $afterWarnings[] = "After handle not found in tab; appended to end: {$afterHandle}";
+                if ($positionHandle) {
+                    $afterWarnings[] = "Position handle not found in tab; appended to end: {$positionHandle}";
                 }
             } else {
-                $insertIndex++;
+                if ($insertAfter) {
+                    $insertIndex++;
+                }
                 array_splice($elements, $insertIndex, 0, [$layoutElement]);
             }
             $added[] = $fieldHandle;
@@ -497,7 +511,13 @@ class EntryTypesController extends Controller
 
             $type = $config['type'];
             $afterHandle = $config['after'] ?? null;
+            $beforeHandle = $config['before'] ?? null;
             $layoutElement = null;
+
+            if ($afterHandle && $beforeHandle) {
+                $this->stdout("Error: Cannot use both 'after' and 'before' for element {$index}.\n");
+                return ExitCode::DATAERR;
+            }
 
             switch ($type) {
                 case 'heading':
@@ -548,12 +568,15 @@ class EntryTypesController extends Controller
 
             if ($layoutElement) {
                 $insertIndex = null;
-                if ($afterHandle) {
+                $positionHandle = $afterHandle ?: $beforeHandle;
+                $insertAfter = (bool)$afterHandle;
+
+                if ($positionHandle) {
                     foreach ($elements as $idx => $element) {
                         if ($element instanceof BaseField) {
                             try {
-                                if ($element->attribute() === $afterHandle) {
-                                    $insertIndex = $idx + 1;
+                                if ($element->attribute() === $positionHandle) {
+                                    $insertIndex = $insertAfter ? $idx + 1 : $idx;
                                     break;
                                 }
                             } catch (\Throwable) {
@@ -565,15 +588,15 @@ class EntryTypesController extends Controller
                         $lastInsertIndex = $insertIndex;
                     }
                 } elseif ($lastInsertIndex !== null) {
-                    // No "after" specified, insert after the last inserted element
+                    // No position specified, insert after the last inserted element
                     $insertIndex = $lastInsertIndex;
                 }
 
                 if ($insertIndex === null) {
                     $elements[] = $layoutElement;
                     $lastInsertIndex = count($elements) - 1;
-                    if ($afterHandle) {
-                        $this->stdout("Warning: After handle '{$afterHandle}' not found; appended to end.\n");
+                    if ($positionHandle) {
+                        $this->stdout("Warning: Position handle '{$positionHandle}' not found; appended to end.\n");
                     }
                 } else {
                     array_splice($elements, $insertIndex, 0, [$layoutElement]);
