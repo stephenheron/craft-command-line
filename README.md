@@ -37,6 +37,14 @@ composer require whereverly/craft-command-line
 php craft command-line/fields/get
 ```
 
+### List all entry types
+
+```bash
+php craft command-line/entry-types/list
+```
+
+Lists all entry types with their handle, name, and associated sections.
+
 ### List fields for an entry type
 
 ```bash
@@ -63,6 +71,7 @@ Field config keys
 - `handle` (required) Existing field handle to add.
 - `as` (optional) Instance handle override (useful for multi-instance fields).
 - `after` (optional) Insert after the given handle in the tab. If not found, fields are appended.
+- `before` (optional) Insert before the given handle in the tab. Cannot be used with `after`.
 - `label` (optional) Override label.
 - `instructions` (optional) Override instructions.
 - `required` (optional) Override required flag (`true`/`false`).
@@ -71,13 +80,32 @@ Field config keys
 
 Notes
 - The `as` handle must be unique within the entry type layout.
-- Handle overrides are validated against Craft’s handle rules and reserved words.
+- Handle overrides are validated against Craft's handle rules and reserved words.
 
-### Add a tab to an entry type
+### Edit fields on an entry type
 
 ```bash
-php craft command-line/entry-types/add-tab myEntryTypeHandle "Tab Name"
+php craft command-line/entry-types/edit-fields myEntryTypeHandle \
+  --fields-config='[
+    {"handle":"metaTitle","label":"New Label","required":true}
+  ]'
 ```
+
+Options
+- `--tab="Tab Name"` (optional) Limit edits to a specific tab. Defaults to searching all tabs.
+- `--fields-config` (required) JSON array of field edits.
+
+Field config keys
+- `handle` (required) The field handle to find and edit.
+- `label` (optional) New label.
+- `instructions` (optional) New instructions.
+- `required` (optional) New required flag (`true`/`false`).
+- `tip` (optional) New tip text.
+- `warning` (optional) New warning text.
+- `as` (optional) Rename the instance handle.
+- `tab` (optional) Move the field to a different tab.
+- `after` (optional) Reposition after the given handle.
+- `before` (optional) Reposition before the given handle. Cannot be used with `after`.
 
 ### Remove fields from an entry type
 
@@ -91,6 +119,68 @@ php craft command-line/entry-types/remove-fields myEntryTypeHandle \
 
 Options
 - `--tab="Tab Name"` (optional) Limit removals to a specific tab.
+
+### Add a tab to an entry type
+
+```bash
+php craft command-line/entry-types/add-tab myEntryTypeHandle "Tab Name"
+```
+
+### Remove a tab from an entry type
+
+```bash
+php craft command-line/entry-types/remove-tab myEntryTypeHandle "Tab Name"
+```
+
+The tab must be empty (no fields or UI elements) before it can be removed.
+
+### Rename a tab on an entry type
+
+```bash
+php craft command-line/entry-types/edit-tab myEntryTypeHandle "Old Name" --name="New Name"
+```
+
+### Add UI elements to an entry type
+
+```bash
+php craft command-line/entry-types/add-ui-elements myEntryTypeHandle \
+  --elements-config='[
+    {"type":"heading","heading":"Page Settings","after":"fieldHandle"},
+    {"type":"hr"},
+    {"type":"tip","tip":"Helpful info","style":"tip","dismissible":false},
+    {"type":"markdown","content":"**Bold text** here"},
+    {"type":"line-break"}
+  ]'
+```
+
+Options
+- `--tab="Tab Name"` (optional) Choose the tab to add elements to. Defaults to the first tab.
+- `--elements-config` (required) JSON array of UI element definitions.
+
+Supported element types
+- `heading` — Config: `{"type":"heading","heading":"Text here"}`
+- `hr` / `horizontal-rule` — Config: `{"type":"hr"}`
+- `tip` — Config: `{"type":"tip","tip":"Text","style":"tip|warning","dismissible":true|false}`
+- `markdown` — Config: `{"type":"markdown","content":"Markdown text"}`
+- `line-break` / `br` — Config: `{"type":"line-break"}`
+
+Each element supports `after` or `before` for positioning relative to a field handle. Elements without positioning are appended, or inserted after the previously inserted element.
+
+### Remove UI elements from an entry type
+
+```bash
+php craft command-line/entry-types/remove-ui-elements myEntryTypeHandle \
+  --elements-config='[
+    {"type":"heading","heading":"Page Settings"},
+    {"type":"hr"}
+  ]'
+```
+
+Options
+- `--tab="Tab Name"` (optional) Limit removals to a specific tab. Defaults to searching all tabs.
+- `--elements-config` (required) JSON array of UI elements to match and remove.
+
+For `heading`, `tip`, and `markdown` types, you can provide the text content to match a specific element. Without it, all elements of that type are removed.
 
 ### Create an entry
 
