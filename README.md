@@ -77,6 +77,7 @@ Field config keys
 - `required` (optional) Override required flag (`true`/`false`).
 - `tip` (optional) Override tip text.
 - `warning` (optional) Override warning text.
+- `elementCondition` (optional) Element condition config (array) controlling when the field is shown, or `null` to leave unset. See Craft's element condition docs.
 
 Notes
 - The `as` handle must be unique within the entry type layout.
@@ -106,6 +107,7 @@ Field config keys
 - `tab` (optional) Move the field to a different tab.
 - `after` (optional) Reposition after the given handle.
 - `before` (optional) Reposition before the given handle. Cannot be used with `after`.
+- `elementCondition` (optional) New element condition config (array), or `null` to clear an existing condition.
 
 ### Remove fields from an entry type
 

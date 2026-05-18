@@ -329,6 +329,9 @@ class EntryTypesController extends Controller
             if (array_key_exists('as', $overrides)) {
                 $elementConfig['handle'] = $overrides['as'];
             }
+            if (array_key_exists('elementCondition', $overrides)) {
+                $elementConfig['elementCondition'] = $overrides['elementCondition'];
+            }
             $afterHandle = null;
             $beforeHandle = null;
             if (array_key_exists('after', $overrides)) {
@@ -1242,6 +1245,10 @@ class EntryTypesController extends Controller
                 if (array_key_exists('warning', $entry)) {
                     $matchedElement->warning = $entry['warning'];
                     $changes[] = 'warning';
+                }
+                if (array_key_exists('elementCondition', $entry)) {
+                    $matchedElement->setElementCondition($entry['elementCondition']);
+                    $changes[] = 'elementCondition';
                 }
 
                 // Handle rename (changing the instance handle)
