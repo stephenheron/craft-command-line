@@ -37,6 +37,25 @@ composer require whereverly/craft-command-line
 php craft command-line/fields/get
 ```
 
+### Create a field
+
+```bash
+php craft command-line/fields/create \
+  --type="craft\fields\Entries" \
+  --name="Featured Post" \
+  --handle="featuredPost" \
+  --settings='{"sources":["section:UID"],"maxRelations":1}'
+```
+
+- `--type` (required) Fully-qualified field type class (e.g. `craft\fields\Entries`, `craft\fields\PlainText`).
+- `--name` (required) The field's display name.
+- `--handle` (required) The field handle. Fails if a field already exists with this handle.
+- `--settings` (optional) JSON object of field-type-specific settings.
+- `--instructions` (optional) Field instructions.
+- `--searchable` (optional) Whether the field is searchable. Defaults to `false`.
+- `--translation-method` (optional) e.g. `none`, `site`, `siteGroup`, `language`, `custom`.
+- `--translation-key-format` (optional) Used when `--translation-method=custom`.
+
 ### List all entry types
 
 ```bash
