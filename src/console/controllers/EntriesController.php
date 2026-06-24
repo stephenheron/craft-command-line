@@ -14,13 +14,14 @@ class EntriesController extends Controller
     public ?string $site = null;
     public ?string $status = null;
     public ?string $fields = null;
+    public ?string $section = null;
 
     public function options($actionID): array
     {
         $options = parent::options($actionID);
 
         if ($actionID === 'create') {
-            $options = array_merge($options, ['title', 'slug', 'site', 'status', 'fields']);
+            $options = array_merge($options, ['title', 'slug', 'site', 'status', 'fields', 'section']);
         }
 
         return $options;
@@ -30,6 +31,8 @@ class EntriesController extends Controller
      * Create a new entry for a specific entry type handle.
      *
      * Usage: php craft command-line/entries/create myEntryTypeHandle --title="My Title" --fields='{"fieldHandle":"value"}'
+     *
+     * If the entry type is used by more than one section, pass --section=sectionHandle to choose one.
      */
     public function actionCreate(string $handle): int
     {
@@ -43,6 +46,42 @@ class EntriesController extends Controller
         if ($entryType->hasTitleField && !$this->title) {
             $this->stdout("Missing --title option for entry types with a title field.\n");
             return ExitCode::USAGE;
+        }
+
+        // Entry types are decoupled from sections in Craft 5 (a type can be used by
+        // multiple sections), so resolve the owning section from the entry type.
+        $sections = array_values(array_filter(
+            Craft::$app->getEntries()->getAllSections(),
+            fn($section) => in_array(
+                $entryType->id,
+                array_map(fn($et) => $et->id, $section->getEntryTypes()),
+                true
+            )
+        ));
+
+        if (!$sections) {
+            $this->stdout("No section uses entry type: {$handle}\n");
+            return ExitCode::UNSPECIFIED_ERROR;
+        }
+
+        if ($this->section) {
+            $section = null;
+            foreach ($sections as $candidate) {
+                if ($candidate->handle === $this->section) {
+                    $section = $candidate;
+                    break;
+                }
+            }
+            if (!$section) {
+                $this->stdout("Entry type '{$handle}' is not used by section: {$this->section}\n");
+                return ExitCode::USAGE;
+            }
+        } elseif (count($sections) > 1) {
+            $handles = implode(', ', array_map(fn($section) => $section->handle, $sections));
+            $this->stdout("Entry type '{$handle}' is used by multiple sections; specify one with --section. Options: {$handles}\n");
+            return ExitCode::USAGE;
+        } else {
+            $section = $sections[0];
         }
 
         $site = $this->site
@@ -81,7 +120,7 @@ class EntriesController extends Controller
         }
 
         $entry = new Entry();
-        $entry->sectionId = $entryType->sectionId;
+        $entry->sectionId = $section->id;
         $entry->typeId = $entryType->id;
         $entry->siteId = $site->id;
         $entry->enabled = $enabled;
@@ -115,6 +154,7 @@ class EntriesController extends Controller
         $this->stdout("ID: {$entry->id}\n");
         $this->stdout("Title: {$entry->title}\n");
         $this->stdout("Slug: {$entry->slug}\n");
+        $this->stdout("Section: {$section->handle}\n");
         $this->stdout("Site: {$site->handle}\n");
         $this->stdout("Status: " . ($entry->enabled ? 'enabled' : 'disabled') . "\n");
 
